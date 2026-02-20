@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import {
   EditorView,
@@ -29,8 +29,11 @@ import { unifiedMergeView, getChunks, acceptChunk, rejectChunk } from "@codemirr
 import { latex } from "codemirror-lang-latex";
 import { useDocumentStore } from "@/stores/document-store";
 import { useProposedChangesStore, type ProposedChange } from "@/stores/proposed-changes-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { compileLatex } from "@/lib/latex-compiler";
 import { EditorToolbar } from "./editor-toolbar";
+import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
+import { SpellCheckIcon } from "lucide-react";
 import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
 import { ProposedChangesPanel } from "@/components/claude-chat/proposed-changes-panel";
 import { ImagePreview } from "./image-preview";
@@ -70,6 +73,8 @@ export function LatexEditor() {
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(0);
   const [mergeChunkInfo, setMergeChunkInfo] = useState({ total: 0, current: 0 });
+  const [selectionCoords, setSelectionCoords] = useState<{ top: number; left: number } | null>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
 
   const { resolvedTheme } = useTheme();
 
@@ -277,6 +282,20 @@ export function LatexEditor() {
         const { from, to, head } = update.state.selection.main;
         setCursorPosition(head);
         setSelectionRange(from !== to ? { start: from, end: to } : null);
+
+        // Compute toolbar position below the selection end
+        if (from !== to) {
+          const startCoords = update.view.coordsAtPos(from);
+          const endCoords = update.view.coordsAtPos(to);
+          if (endCoords && startCoords) {
+            setSelectionCoords({
+              top: endCoords.bottom,   // below last line of selection
+              left: startCoords.left,  // aligned to selection start
+            });
+          }
+        } else {
+          setSelectionCoords(null);
+        }
       }
     });
 
@@ -441,6 +460,60 @@ export function LatexEditor() {
     clearJumpRequest();
   }, [jumpToPosition, clearJumpRequest]);
 
+  // Selection toolbar: compute context label and container-relative position
+  const selectionRange = useDocumentStore((s) => s.selectionRange);
+  const selectionLabel = useMemo(() => {
+    const view = viewRef.current;
+    if (!selectionRange || !view || !activeFile) return null;
+    try {
+      const startLine = view.state.doc.lineAt(selectionRange.start);
+      const endLine = view.state.doc.lineAt(selectionRange.end);
+      const startCol = selectionRange.start - startLine.from + 1;
+      const endCol = selectionRange.end - endLine.from + 1;
+      const fileName = activeFile.relativePath;
+      return `@${fileName}:${startLine.number}:${startCol}-${endLine.number}:${endCol}`;
+    } catch {
+      return null;
+    }
+  }, [selectionRange, activeFile]);
+
+  const toolbarPosition = useMemo(() => {
+    if (!selectionCoords || !parentRef.current) return null;
+    const parentRect = parentRef.current.getBoundingClientRect();
+    const relTop = selectionCoords.top - parentRect.top + 4; // 4px gap below selection
+    const relLeft = Math.max(8, Math.min(
+      selectionCoords.left - parentRect.left,
+      parentRect.width - 272, // 264px toolbar + 8px margin
+    ));
+    return { top: relTop, left: relLeft };
+  }, [selectionCoords]);
+
+  const handleToolbarSendPrompt = useCallback(
+    (prompt: string) => {
+      setSelectionCoords(null);
+      useClaudeChatStore.getState().sendPrompt(prompt);
+    },
+    [],
+  );
+
+  const editorToolbarActions: ToolbarAction[] = useMemo(() => [
+    { id: "proofread", label: "Proofread", icon: <SpellCheckIcon className="size-4" /> },
+  ], []);
+
+  const handleToolbarAction = useCallback(
+    (actionId: string) => {
+      setSelectionCoords(null);
+      if (actionId === "proofread") {
+        useClaudeChatStore.getState().sendPrompt("Proofread and fix any errors in this text");
+      }
+    },
+    [],
+  );
+
+  const handleToolbarDismiss = useCallback(() => {
+    setSelectionCoords(null);
+  }, []);
+
   if (!isTextFile && activeFile) {
     return (
       <div className="flex h-full flex-col bg-background">
@@ -467,9 +540,20 @@ export function LatexEditor() {
           currentMatch={currentMatch}
         />
       )}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={parentRef} className="relative min-h-0 flex-1 overflow-hidden">
         <div ref={containerRef} className="absolute inset-0" />
         <ClaudeChatDrawer />
+        {/* Selection toolbar */}
+        {toolbarPosition && selectionLabel && !isMergeActiveRef.current && (
+          <SelectionToolbar
+            position={toolbarPosition}
+            contextLabel={selectionLabel}
+            actions={editorToolbarActions}
+            onSendPrompt={handleToolbarSendPrompt}
+            onAction={handleToolbarAction}
+            onDismiss={handleToolbarDismiss}
+          />
+        )}
         {/* Floating chunk navigator pill */}
         {activeFileChange && mergeChunkInfo.total > 0 && (
           <div className="absolute top-3 right-3 z-20 flex items-center gap-1 rounded-lg border border-border bg-background/95 px-2 py-1 shadow-lg backdrop-blur-sm">

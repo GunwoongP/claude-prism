@@ -2,6 +2,16 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore } from "./document-store";
 
+/** Convert a character offset to 1-based line:col */
+export function offsetToLineCol(
+  content: string,
+  offset: number,
+): { line: number; col: number } {
+  const before = content.slice(0, offset);
+  const lines = before.split("\n");
+  return { line: lines.length, col: lines[lines.length - 1].length + 1 };
+}
+
 // ─── Types ───
 
 export interface ContentBlock {
@@ -47,7 +57,7 @@ interface ClaudeChatState {
   totalOutputTokens: number;
 
   // Actions
-  sendPrompt: (userPrompt: string) => Promise<void>;
+  sendPrompt: (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => Promise<void>;
   cancelExecution: () => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
@@ -69,7 +79,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   totalInputTokens: 0,
   totalOutputTokens: 0,
 
-  sendPrompt: async (userPrompt: string) => {
+  sendPrompt: async (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => {
     const { sessionId, isStreaming } = get();
     if (isStreaming) return;
 
@@ -80,11 +90,30 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       return;
     }
 
-    // Add user message to the list for display
+    // Compute context label for display in chat history
+    const activeFile = docState.files.find((f) => f.id === docState.activeFileId);
+    let contextLabel: string | null = null;
+
+    if (contextOverride) {
+      contextLabel = contextOverride.label;
+    } else if (activeFile) {
+      const selRange = docState.selectionRange;
+      if (selRange && activeFile.content) {
+        const content = activeFile.content;
+        const startLC = offsetToLineCol(content, selRange.start);
+        const endLC = offsetToLineCol(content, selRange.end);
+        contextLabel = `@${activeFile.relativePath}:${startLC.line}:${startLC.col}-${endLC.line}:${endLC.col}`;
+      }
+    }
+
+    // Add user message to the list for display (with context label visible)
+    const displayText = contextLabel
+      ? `${contextLabel}\n${userPrompt}`
+      : userPrompt;
     const userMessage: ClaudeStreamMessage = {
       type: "user",
       message: {
-        content: [{ type: "text", text: userPrompt }],
+        content: [{ type: "text", text: displayText }],
       },
     };
 
@@ -99,8 +128,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       await docState.saveAllFiles();
     }
 
-    // Add context about the currently focused file
-    const activeFile = docState.files.find((f) => f.id === docState.activeFileId);
+    // Build prompt with full context for Claude
     let prompt = userPrompt;
     if (activeFile) {
       const selRange = docState.selectionRange;
@@ -109,7 +137,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           ? activeFile.content.slice(selRange.start, selRange.end)
           : null;
       let ctx = `[Currently open file: ${activeFile.relativePath}]`;
-      if (selectedText) {
+      if (contextOverride) {
+        ctx += `\n[Selection: ${contextOverride.label}]`;
+        ctx += `\n[Selected text:\n${contextOverride.selectedText}\n]`;
+      } else if (selectedText && selRange) {
+        const content = activeFile.content ?? "";
+        const startLC = offsetToLineCol(content, selRange.start);
+        const endLC = offsetToLineCol(content, selRange.end);
+        ctx += `\n[Selection: @${activeFile.relativePath}:${startLC.line}:${startLC.col}-${endLC.line}:${endLC.col}]`;
         ctx += `\n[Selected text:\n${selectedText}\n]`;
       }
       prompt = `${ctx}\n\n${userPrompt}`;

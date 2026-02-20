@@ -132,10 +132,21 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
 
   if (!textContent) return null;
 
+  // Parse leading @file:line:col or ~@file:line context reference
+  const contextMatch = textContent.match(/^(~?@[^\n]+)\n([\s\S]*)$/);
+  const contextLabel = contextMatch?.[1] ?? null;
+  const bodyText = contextMatch ? contextMatch[2] : textContent;
+
   return (
     <div className="flex w-full flex-col items-end py-1.5">
       <div className="max-w-[85%] rounded-xl bg-muted px-3 py-1.5 text-foreground text-sm">
-        {textContent}
+        {contextLabel && (
+          <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+            {contextLabel}
+          </span>
+        )}
+        {contextLabel && bodyText && <br />}
+        {bodyText}
       </div>
     </div>
   );

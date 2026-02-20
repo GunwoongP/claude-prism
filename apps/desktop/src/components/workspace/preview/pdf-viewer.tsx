@@ -7,6 +7,14 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+export interface PdfTextSelection {
+  text: string;
+  pageNumber: number;
+  position: { top: number; left: number }; // screen coords (bottom of selection)
+  pdfX: number; // PDF-space x coordinate (for synctex)
+  pdfY: number; // PDF-space y coordinate (for synctex)
+}
+
 interface PdfViewerProps {
   data: Uint8Array;
   scale: number;
@@ -15,6 +23,7 @@ interface PdfViewerProps {
   onScaleChange?: (scale: number) => void;
   onTextClick?: (text: string) => void;
   onSynctexClick?: (page: number, x: number, y: number) => void;
+  onTextSelect?: (selection: PdfTextSelection | null) => void;
 }
 
 export function PdfViewer({
@@ -25,6 +34,7 @@ export function PdfViewer({
   onScaleChange,
   onTextClick,
   onSynctexClick,
+  onTextSelect,
 }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -36,6 +46,8 @@ export function PdfViewer({
   scaleRef.current = scale;
   const synctexClickRef = useRef(onSynctexClick);
   synctexClickRef.current = onSynctexClick;
+  const textSelectRef = useRef(onTextSelect);
+  textSelectRef.current = onTextSelect;
 
   // Scroll preservation across recompile
   const isFirstLoad = useRef(true);
@@ -199,6 +211,65 @@ export function PdfViewer({
 
     container.addEventListener("dblclick", handleDblClick);
     return () => container.removeEventListener("dblclick", handleDblClick);
+  }, []); // stable — uses refs for changing values
+
+  // Text selection detection via mouseup
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleMouseUp = () => {
+      const cb = textSelectRef.current;
+      if (!cb) return;
+
+      // Small delay to let the browser finalize the selection
+      requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        const text = sel?.toString().trim();
+        if (!text || text.length < 2) {
+          cb(null);
+          return;
+        }
+
+        // Check that the selection is within the PDF text layer
+        const anchorEl = sel?.anchorNode?.parentElement;
+        if (!anchorEl?.closest(".react-pdf__Page__textContent")) {
+          cb(null);
+          return;
+        }
+
+        // Find which page the selection is in
+        const pageEl = anchorEl.closest(".react-pdf__Page") as HTMLElement | null;
+        const pageNum = pageEl
+          ? parseInt(pageEl.getAttribute("data-page-number") || "1", 10)
+          : 1;
+
+        // Get position at the end of the selection (bottom)
+        const range = sel!.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+
+        // Compute PDF-space coordinates from selection start for synctex
+        let pdfX = 0;
+        let pdfY = 0;
+        if (pageEl) {
+          const pageRect = pageEl.getBoundingClientRect();
+          const currentScale = scaleRef.current;
+          pdfX = (rect.left - pageRect.left) / currentScale;
+          pdfY = (rect.top - pageRect.top) / currentScale;
+        }
+
+        cb({
+          text,
+          pageNumber: pageNum,
+          position: { top: rect.bottom, left: rect.left },
+          pdfX,
+          pdfY,
+        });
+      });
+    };
+
+    container.addEventListener("mouseup", handleMouseUp);
+    return () => container.removeEventListener("mouseup", handleMouseUp);
   }, []); // stable — uses refs for changing values
 
   useEffect(() => {

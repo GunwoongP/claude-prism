@@ -1,6 +1,7 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   FileTextIcon,
+  SpellCheckIcon,
   AlertCircleIcon,
   LoaderIcon,
   RefreshCwIcon,
@@ -9,6 +10,7 @@ import {
   DownloadIcon,
 } from "lucide-react";
 import { useDocumentStore } from "@/stores/document-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -18,6 +20,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { compileLatex, synctexEdit } from "@/lib/latex-compiler";
+import { SelectionToolbar, type ToolbarAction } from "@/components/workspace/editor/selection-toolbar";
+import type { PdfTextSelection } from "./pdf-viewer";
 
 const ZOOM_OPTIONS = [
   { value: "0.5", label: "50%" },
@@ -56,6 +60,10 @@ export function PdfPreview() {
   const [scale, setScale] = useState<number>(1.0);
   const hasInitialCompile = useRef(false);
   const initialized = useDocumentStore((s) => s.initialized);
+
+  // PDF text selection toolbar
+  const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
 
   const handleTextClick = useCallback(
     (text: string) => {
@@ -127,6 +135,139 @@ export function PdfPreview() {
     },
     [projectRoot, files, setActiveFile, requestJumpToPosition],
   );
+
+  // Resolved source location from synctex
+  const [resolvedSource, setResolvedSource] = useState<{
+    file: string;
+    line: number;
+    column: number;
+  } | null>(null);
+
+  const handleTextSelect = useCallback((selection: PdfTextSelection | null) => {
+    setPdfSelection(selection);
+    setResolvedSource(null);
+  }, []);
+
+  // When PDF selection changes, resolve source via synctex
+  useEffect(() => {
+    if (!pdfSelection || !projectRoot) return;
+    let cancelled = false;
+    synctexEdit(projectRoot, pdfSelection.pageNumber, pdfSelection.pdfX, pdfSelection.pdfY)
+      .then((result) => {
+        if (cancelled || !result) return;
+        setResolvedSource(result);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pdfSelection, projectRoot]);
+
+  // Build the context label: use synctex-resolved source if available, else PDF page
+  // Prefix with ~ to indicate approximate location (from PDF, not exact source)
+  const pdfContextLabel = resolvedSource
+    ? `~@${resolvedSource.file}:${resolvedSource.line}`
+    : pdfSelection
+      ? `~@PDF page ${pdfSelection.pageNumber}`
+      : "";
+
+  // Navigate to source file:line (reuses handleSynctexClick logic)
+  const navigateToSource = useCallback(() => {
+    if (!resolvedSource) return;
+    const normalize = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
+    const normalizedTarget = normalize(resolvedSource.file);
+    const targetFile = files.find(
+      (f) => normalize(f.relativePath) === normalizedTarget,
+    );
+    if (!targetFile) return;
+
+    const state = useDocumentStore.getState();
+    const needsSwitch = state.activeFileId !== targetFile.id;
+    if (needsSwitch) setActiveFile(targetFile.id);
+
+    const fileContent = targetFile.content ?? "";
+    const fileLines = fileContent.split("\n");
+    const targetLine = Math.max(1, Math.min(resolvedSource.line, fileLines.length));
+    let offset = 0;
+    for (let i = 0; i < targetLine - 1; i++) {
+      offset += fileLines[i].length + 1;
+    }
+    if (resolvedSource.column > 0) {
+      offset += Math.min(resolvedSource.column, fileLines[targetLine - 1]?.length ?? 0);
+    }
+
+    if (needsSwitch) {
+      setTimeout(() => requestJumpToPosition(offset), 100);
+    } else {
+      requestJumpToPosition(offset);
+    }
+  }, [resolvedSource, files, setActiveFile, requestJumpToPosition]);
+
+  // Build annotated selectedText for Claude — note that this is from PDF output
+  const buildPdfContext = useCallback((text: string) => {
+    const locationNote = resolvedSource
+      ? `near ${resolvedSource.file}:${resolvedSource.line}`
+      : pdfSelection
+        ? `PDF page ${pdfSelection.pageNumber}`
+        : "PDF";
+    return `[Selected from PDF output, approximate source location: ${locationNote}]\n${text}`;
+  }, [resolvedSource, pdfSelection]);
+
+  const handlePdfToolbarSendPrompt = useCallback(
+    (prompt: string) => {
+      if (!pdfSelection) return;
+      const label = pdfContextLabel;
+      const sel = pdfSelection;
+      setPdfSelection(null);
+      window.getSelection()?.removeAllRanges();
+      useClaudeChatStore.getState().sendPrompt(prompt, {
+        label,
+        filePath: resolvedSource?.file ?? "document.pdf",
+        selectedText: buildPdfContext(sel.text),
+      });
+    },
+    [pdfSelection, pdfContextLabel, resolvedSource, buildPdfContext],
+  );
+
+  const pdfToolbarActions: ToolbarAction[] = useMemo(() => [
+    { id: "proofread", label: "Proofread", icon: <SpellCheckIcon className="size-4" /> },
+    { id: "navigate", label: "Navigate to source", icon: <FileTextIcon className="size-4" />, hint: "dbl-click" },
+  ], []);
+
+  const handlePdfToolbarAction = useCallback(
+    (actionId: string) => {
+      if (!pdfSelection) return;
+      const label = pdfContextLabel;
+      const sel = pdfSelection;
+      setPdfSelection(null);
+      window.getSelection()?.removeAllRanges();
+      if (actionId === "proofread") {
+        useClaudeChatStore.getState().sendPrompt("Proofread and fix any errors in this text", {
+          label,
+          filePath: resolvedSource?.file ?? "document.pdf",
+          selectedText: buildPdfContext(sel.text),
+        });
+      } else if (actionId === "navigate") {
+        navigateToSource();
+      }
+    },
+    [pdfSelection, pdfContextLabel, resolvedSource, navigateToSource, buildPdfContext],
+  );
+
+  const handlePdfToolbarDismiss = useCallback(() => {
+    setPdfSelection(null);
+    window.getSelection()?.removeAllRanges();
+  }, []);
+
+  // Compute container-relative position for the toolbar
+  const pdfToolbarPosition = (() => {
+    if (!pdfSelection || !previewContainerRef.current) return null;
+    const containerRect = previewContainerRef.current.getBoundingClientRect();
+    const relTop = pdfSelection.position.top - containerRect.top + 4;
+    const relLeft = Math.max(8, Math.min(
+      pdfSelection.position.left - containerRect.left,
+      containerRect.width - 272,
+    ));
+    return { top: relTop, left: relLeft };
+  })();
 
   useEffect(() => {
     if (hasInitialCompile.current) return;
@@ -234,13 +375,14 @@ export function PdfPreview() {
           onScaleChange={handleScaleChange}
           onTextClick={handleTextClick}
           onSynctexClick={handleSynctexClick}
+          onTextSelect={handleTextSelect}
         />
       </Suspense>
     );
   };
 
   return (
-    <div className="flex h-full flex-col bg-muted/50">
+    <div ref={previewContainerRef} className="relative flex h-full flex-col bg-muted/50">
       <div className="flex h-9 items-center justify-between border-border border-b bg-background px-2">
         <div className="flex items-center gap-1.5">
           {isSaving && (
@@ -281,6 +423,17 @@ export function PdfPreview() {
         )}
       </div>
       {renderContent()}
+      {/* PDF selection toolbar */}
+      {pdfToolbarPosition && pdfSelection && (
+        <SelectionToolbar
+          position={pdfToolbarPosition}
+          contextLabel={pdfContextLabel}
+          actions={pdfToolbarActions}
+          onSendPrompt={handlePdfToolbarSendPrompt}
+          onAction={handlePdfToolbarAction}
+          onDismiss={handlePdfToolbarDismiss}
+        />
+      )}
     </div>
   );
 }
