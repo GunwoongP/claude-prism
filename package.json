@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "dev:web": "pnpm turbo dev --filter=@open-prism/web --filter=@open-prism/latex-api",
-    "dev:desktop": "pnpm turbo dev --filter=@open-prism/desktop --filter=@open-prism/desktop-sidecar",
+    "dev:desktop": "pnpm --filter=@open-prism/desktop-sidecar dev & pnpm --filter=@open-prism/desktop tauri dev",
     "lint": "pnpm exec biome check",
     "lint:fix": "pnpm exec biome check --fix"
   },

@@ -51,8 +51,12 @@ function WorkspaceWithRuntime() {
   );
 }
 
-export function App() {
+export function App({ onReady }: { onReady?: () => void }) {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+
+  useEffect(() => {
+    onReady?.();
+  }, [onReady]);
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem>

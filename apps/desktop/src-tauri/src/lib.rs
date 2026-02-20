@@ -33,49 +33,58 @@ fn get_sidecar_url() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .manage(Mutex::new(SidecarState { child: None }))
         .setup(|app| {
-            // Resolve the sidecar path relative to the app resource directory
-            let resource_dir = app
-                .path()
-                .resource_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            // In dev mode, the sidecar is started separately (via pnpm dev:desktop)
+            // In production, start the sidecar from the bundled resources
+            let sidecar_path = if let Ok(path) = std::env::var("SIDECAR_PATH") {
+                Some(path)
+            } else if cfg!(not(debug_assertions)) {
+                let resource_dir = app
+                    .path()
+                    .resource_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                Some(
+                    resource_dir
+                        .join("sidecar")
+                        .join("index.js")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+            } else {
+                // Dev mode: sidecar is managed by the dev script
+                println!("Dev mode: expecting sidecar on port 3001 (start with pnpm dev:desktop)");
+                None
+            };
 
-            // In development, use the desktop-sidecar from the workspace
-            let sidecar_path = std::env::var("SIDECAR_PATH").unwrap_or_else(|_| {
-                resource_dir
-                    .join("sidecar")
-                    .join("index.js")
-                    .to_string_lossy()
-                    .to_string()
-            });
-
-            let child = start_sidecar(&sidecar_path, 3001);
-
-            let state = app.state::<Mutex<SidecarState>>();
-            let mut state = state.lock().unwrap();
-            state.child = child;
+            if let Some(path) = sidecar_path {
+                let child = start_sidecar(&path, 3001);
+                let state = app.state::<Mutex<SidecarState>>();
+                let mut state = state.lock().unwrap();
+                state.child = child;
+            }
 
             Ok(())
         })
-        .on_event(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Kill sidecar on exit
-                let state = app.state::<Mutex<SidecarState>>();
-                if let Ok(mut state) = state.lock() {
-                    if let Some(ref mut child) = state.child {
-                        let _ = child.kill();
-                        println!("Sidecar process killed");
-                    }
-                }
-            }
-        })
         .invoke_handler(tauri::generate_handler![get_sidecar_url])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Kill sidecar on exit
+            let state = app_handle.state::<Mutex<SidecarState>>();
+            if let Ok(mut guard) = state.lock() {
+                if let Some(ref mut child) = guard.child {
+                    let _ = child.kill();
+                    println!("Sidecar process killed");
+                }
+            };
+        }
+    });
 }

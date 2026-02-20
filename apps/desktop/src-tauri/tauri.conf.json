@@ -4,6 +4,8 @@
   "productName": "Open-Prism",
   "version": "0.0.1",
   "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -15,24 +17,13 @@
         "width": 1400,
         "height": 900,
         "minWidth": 800,
-        "minHeight": 600
+        "minHeight": 600,
+        "visible": false
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' http://localhost:3001 https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' asset: http://asset.localhost data: blob:; worker-src 'self' blob:"
     }
   },
-  "plugins": {
-    "dialog": {},
-    "fs": {
-      "scope": {
-        "allow": ["**"],
-        "requireLiteralLeadingDot": false
-      }
-    },
-    "shell": {
-      "open": true
-    },
-    "process": {}
-  }
+  "plugins": {}
 }
