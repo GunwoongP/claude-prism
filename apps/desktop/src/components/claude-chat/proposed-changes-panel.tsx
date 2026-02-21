@@ -4,12 +4,16 @@ import { type ProposedChange } from "@/stores/proposed-changes-store";
 
 interface ProposedChangesPanelProps {
   change: ProposedChange;
+  changeIndex: number;
+  totalChanges: number;
   onKeep: () => void;
   onUndo: () => void;
 }
 
 export const ProposedChangesPanel: FC<ProposedChangesPanelProps> = ({
   change,
+  changeIndex,
+  totalChanges,
   onKeep,
   onUndo,
 }) => {
@@ -22,6 +26,11 @@ export const ProposedChangesPanel: FC<ProposedChangesPanelProps> = ({
     <div className="flex items-center justify-between border-border border-t bg-muted/50 px-3 py-1.5">
       <div className="flex items-center gap-2 text-sm">
         <span className="font-medium text-foreground">Proposed Changes</span>
+        {totalChanges > 1 && (
+          <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-400">
+            {changeIndex + 1}/{totalChanges} files
+          </span>
+        )}
         <span className="text-muted-foreground">{change.filePath}</span>
         <span className="text-muted-foreground">{change.toolName}</span>
         {added > 0 && <span className="text-green-400">+{added}</span>}

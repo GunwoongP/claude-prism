@@ -32,12 +32,30 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
     changes: [],
 
     addChange: (change) => {
-      set((state) => ({
-        changes: [
-          ...state.changes,
-          { ...change, timestamp: Date.now() },
-        ],
-      }));
+      set((state) => {
+        // If there's already a pending change for the same file, merge them:
+        // keep the original oldContent (true baseline), use the new newContent and id
+        const existingIdx = state.changes.findIndex(
+          (c) => c.filePath === change.filePath,
+        );
+        if (existingIdx >= 0) {
+          const existing = state.changes[existingIdx];
+          const merged: ProposedChange = {
+            ...change,
+            oldContent: existing.oldContent, // preserve original baseline
+            timestamp: Date.now(),
+          };
+          const newChanges = [...state.changes];
+          newChanges[existingIdx] = merged;
+          return { changes: newChanges };
+        }
+        return {
+          changes: [
+            ...state.changes,
+            { ...change, timestamp: Date.now() },
+          ],
+        };
+      });
     },
 
     resolveChange: (id) => {
@@ -50,9 +68,17 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
       const change = get().changes.find((c) => c.id === id);
       if (!change) return;
 
-      // Content is already newContent in the editor and on disk.
-      // Just reload the file in document store to sync state.
-      useDocumentStore.getState().reloadFile(change.filePath);
+      // The caller (editor) already set the correct content via setContent().
+      // Write the document store content to disk to stay in sync
+      // (handles partial chunk resolution where finalContent differs from disk).
+      const file = useDocumentStore
+        .getState()
+        .files.find((f) => f.relativePath === change.filePath);
+      if (file?.content != null) {
+        writeTexFileContent(change.absolutePath, file.content).catch(
+          console.error,
+        );
+      }
 
       // Remove from pending
       set((state) => ({

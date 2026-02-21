@@ -60,10 +60,10 @@ export function useClaudeEvents() {
         return;
       }
 
-      // Use the original content from the store (before any Claude edits)
-      // If there's already a pending change for this file, use its oldContent
-      const existingChange = useProposedChangesStore.getState().getChangeForFile(file.relativePath);
-      const oldContent = existingChange?.oldContent ?? file.content ?? "";
+      // oldContent: use the document store's content (the pre-edit baseline).
+      // addChange() will automatically preserve the original baseline if there's
+      // already a pending change for this file (stacked edits).
+      const oldContent = file.content ?? "";
 
       try {
         const newContent = await readTexFileContent(file.absolutePath);
@@ -73,10 +73,8 @@ export function useClaudeEvents() {
           same: oldContent === newContent,
         });
         if (oldContent !== newContent) {
-          // Remove existing change for same file (if Claude made multiple edits)
-          if (existingChange) {
-            useProposedChangesStore.getState().resolveChange(existingChange.id);
-          }
+          // addChange handles merging: if a change already exists for this file,
+          // it keeps the original oldContent and updates newContent + id atomically
           useProposedChangesStore.getState().addChange({
             id: toolUseId,
             filePath: file.relativePath,
@@ -85,7 +83,7 @@ export function useClaudeEvents() {
             newContent,
             toolName,
           });
-          console.log("[proposed-change] added change for:", file.relativePath);
+          console.log("[proposed-change] added/merged change for:", file.relativePath);
         } else {
           console.log("[proposed-change] content identical, skipping");
         }

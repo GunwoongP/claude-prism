@@ -133,6 +133,11 @@ export function LatexEditor() {
     setContent(change.newContent);
     useProposedChangesStore.getState().keepChange(change.id);
     pendingChangeRef.current = null;
+    // Auto-navigate to next file with pending changes
+    const remaining = useProposedChangesStore.getState().changes;
+    if (remaining.length > 0) {
+      useDocumentStore.getState().setActiveFile(remaining[0].filePath);
+    }
   };
 
   // Undo all changes (⌘N)
@@ -150,6 +155,11 @@ export function LatexEditor() {
     setContent(change.oldContent);
     useProposedChangesStore.getState().undoChange(change.id);
     pendingChangeRef.current = null;
+    // Auto-navigate to next file with pending changes
+    const remaining = useProposedChangesStore.getState().changes;
+    if (remaining.length > 0) {
+      useDocumentStore.getState().setActiveFile(remaining[0].filePath);
+    }
   };
 
   // Navigate to a specific chunk by index
@@ -184,6 +194,11 @@ export function LatexEditor() {
           useProposedChangesStore.getState().keepChange(change.id);
         }
         pendingChangeRef.current = null;
+        // Auto-navigate to next file with pending changes
+        const pendingChanges = useProposedChangesStore.getState().changes;
+        if (pendingChanges.length > 0) {
+          useDocumentStore.getState().setActiveFile(pendingChanges[0].filePath);
+        }
       }
     } else {
       // Focus the next remaining chunk
@@ -291,6 +306,8 @@ export function LatexEditor() {
               setTimeout(() => {
                 const v = viewRef.current;
                 if (!v || !isMergeActiveRef.current) return;
+                // Guard: bail if already resolved by afterChunkAction or a new stacked edit arrived
+                if (pendingChangeRef.current !== change) return;
                 isMergeActiveRef.current = false;
                 setMergeChunkInfo({ total: 0, current: 0 });
                 const finalContent = v.state.doc.toString();
@@ -302,6 +319,11 @@ export function LatexEditor() {
                   useProposedChangesStore.getState().keepChange(change.id);
                 }
                 pendingChangeRef.current = null;
+                // Auto-navigate to next file with pending changes
+                const remaining = useProposedChangesStore.getState().changes;
+                if (remaining.length > 0) {
+                  useDocumentStore.getState().setActiveFile(remaining[0].filePath);
+                }
               }, 0);
             }
           }
@@ -510,7 +532,7 @@ export function LatexEditor() {
     }
   }, [activeFileContent, isTextFile]);
 
-  // Watch for proposed changes → activate/deactivate merge view
+  // Watch for proposed changes → activate/deactivate/update merge view
   useEffect(() => {
     const view = viewRef.current;
     console.log("[merge-view] effect fired:", {
@@ -518,6 +540,7 @@ export function LatexEditor() {
       isTextFile,
       activeFileChange: activeFileChange ? { id: activeFileChange.id, filePath: activeFileChange.filePath } : null,
       isMergeActive: isMergeActiveRef.current,
+      pendingId: pendingChangeRef.current?.id,
     });
     if (!view || !isTextFile) return;
 
@@ -544,6 +567,28 @@ export function LatexEditor() {
         console.error("[merge-view] failed to activate merge view:", err);
         isMergeActiveRef.current = false;
         pendingChangeRef.current = null;
+      }
+    } else if (activeFileChange && isMergeActiveRef.current && pendingChangeRef.current?.id !== activeFileChange.id) {
+      // Stacked edit: the change was updated while merge was already active.
+      // Re-dispatch the merge view with the accumulated diff (original → latest).
+      console.log("[merge-view] UPDATING merge view (stacked edit) for:", activeFileChange.filePath);
+      pendingChangeRef.current = activeFileChange;
+      try {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: activeFileChange.newContent },
+          effects: mergeCompartmentRef.current.reconfigure(
+            unifiedMergeView({
+              original: activeFileChange.oldContent,
+              highlightChanges: true,
+              gutter: true,
+              mergeControls: true,
+            })
+          ),
+          annotations: Transaction.addToHistory.of(false),
+        });
+        console.log("[merge-view] merge view updated successfully (stacked edit)");
+      } catch (err) {
+        console.error("[merge-view] failed to update merge view:", err);
       }
     } else if (!activeFileChange && isMergeActiveRef.current) {
       // Deactivate merge view (externally resolved)
@@ -799,6 +844,8 @@ export function LatexEditor() {
       {activeFileChange && (
         <ProposedChangesPanel
           change={activeFileChange}
+          changeIndex={proposedChanges.findIndex((c) => c.filePath === activeFile?.relativePath)}
+          totalChanges={proposedChanges.length}
           onKeep={() => handleKeepAllRef.current()}
           onUndo={() => handleUndoAllRef.current()}
         />
