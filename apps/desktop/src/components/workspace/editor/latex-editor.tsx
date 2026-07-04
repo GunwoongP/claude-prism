@@ -48,7 +48,10 @@ import {
   useProposedChangesStore,
   type ProposedChange,
 } from "@/stores/proposed-changes-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  useClaudeChatStore,
+  type PromptContextOverride,
+} from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
 import {
   compileLatex,
@@ -354,18 +357,24 @@ export function LatexEditor() {
     if (searchQuery) findNext(view);
   }, [searchQuery]);
 
-  const handleFindNext = () => {
+  const handleFindNext = (options?: { focusEditor?: boolean }) => {
     const view = viewRef.current;
     if (view) {
       findNext(view);
-      view.focus();
+      if (matchCount > 0) {
+        setCurrentMatch((current) => (current % matchCount) + 1);
+      }
+      if (options?.focusEditor !== false) view.focus();
     }
   };
-  const handleFindPrevious = () => {
+  const handleFindPrevious = (options?: { focusEditor?: boolean }) => {
     const view = viewRef.current;
     if (view) {
       findPrevious(view);
-      view.focus();
+      if (matchCount > 0) {
+        setCurrentMatch((current) => (current <= 1 ? matchCount : current - 1));
+      }
+      if (options?.focusEditor !== false) view.focus();
     }
   };
 
@@ -986,14 +995,44 @@ export function LatexEditor() {
     return { top: relTop, left: relLeft };
   }, [selectionCoords]);
 
-  const handleToolbarSendPrompt = useCallback(
+  const buildSelectionContext =
+    useCallback((): PromptContextOverride | null => {
+      if (!selectionRange || !selectionLabel || !activeFile?.content) {
+        return null;
+      }
+      const start = Math.min(selectionRange.start, selectionRange.end);
+      const end = Math.max(selectionRange.start, selectionRange.end);
+      const selectedText = activeFile.content.slice(start, end);
+      if (!selectedText) return null;
+      return {
+        label: selectionLabel,
+        filePath: activeFile.relativePath,
+        selectedText,
+      };
+    }, [selectionRange, selectionLabel, activeFile]);
+
+  const sendToolbarPromptWithSelectionContext = useCallback(
     (prompt: string) => {
+      const context = buildSelectionContext();
       toolbarStickyRef.current = false;
       setSelectionCoords(null);
       setSelectionRange(null);
-      useClaudeChatStore.getState().sendPrompt(prompt);
+      const chat = useClaudeChatStore.getState();
+      if (context) {
+        void chat.sendPrompt(prompt, context);
+        chat.requestPinnedContextRemoval([context.label]);
+      } else {
+        void chat.sendPrompt(prompt);
+      }
     },
-    [setSelectionRange],
+    [buildSelectionContext, setSelectionRange],
+  );
+
+  const handleToolbarSendPrompt = useCallback(
+    (prompt: string) => {
+      sendToolbarPromptWithSelectionContext(prompt);
+    },
+    [sendToolbarPromptWithSelectionContext],
   );
 
   const editorToolbarActions: ToolbarAction[] = useMemo(
@@ -1009,16 +1048,13 @@ export function LatexEditor() {
 
   const handleToolbarAction = useCallback(
     (actionId: string) => {
-      toolbarStickyRef.current = false;
-      setSelectionCoords(null);
-      setSelectionRange(null);
       if (actionId === "proofread") {
-        useClaudeChatStore
-          .getState()
-          .sendPrompt("Proofread and fix any errors in this text");
+        sendToolbarPromptWithSelectionContext(
+          "Proofread and fix any errors in this text",
+        );
       }
     },
-    [setSelectionRange],
+    [sendToolbarPromptWithSelectionContext],
   );
 
   const handleToolbarDismiss = useCallback(() => {
@@ -1064,7 +1100,7 @@ export function LatexEditor() {
   const isImage = !isTextFile && !isPdf && !!activeFile;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full min-w-0 flex-col bg-background">
       {/* Toolbar — adapts to file type */}
       <EditorToolbar
         editorView={viewRef}
