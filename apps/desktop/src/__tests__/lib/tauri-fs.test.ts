@@ -23,9 +23,12 @@ describe("tauri fs helpers", () => {
       expect(getProjectFileType("script.py")).toBe("other");
     });
 
-    it("ignores LaTeX build artifacts", () => {
+    it("ignores LaTeX and compiled build artifacts", () => {
       expect(getProjectFileType("main.aux")).toBeNull();
       expect(getProjectFileType("main.synctex.gz")).toBeNull();
+      expect(getProjectFileType("module.pyc")).toBeNull();
+      expect(getProjectFileType("native.pyd")).toBeNull();
+      expect(getProjectFileType("libnative.so")).toBeNull();
     });
 
     it("keeps imported files with arbitrary extensions visible", () => {
@@ -33,8 +36,6 @@ describe("tauri fs helpers", () => {
       expect(getProjectFileType("paper.docx")).toBe("other");
       expect(getProjectFileType("data.xlsx")).toBe("other");
       expect(getProjectFileType("movie.mp4")).toBe("other");
-      expect(getProjectFileType("module.pyc")).toBe("other");
-      expect(getProjectFileType("native.pyd")).toBe("other");
     });
   });
 
@@ -90,7 +91,6 @@ describe("tauri fs helpers", () => {
 
     it("keeps arbitrary file formats visible as other files", async () => {
       vi.mocked(readDir).mockResolvedValue([
-        { name: "module.pyc", isDirectory: false },
         { name: "worker.py", isDirectory: false },
         { name: "notes.txt", isDirectory: false },
       ] as any);
@@ -99,11 +99,10 @@ describe("tauri fs helpers", () => {
       const result = await scanProjectFolder("/project");
 
       expect(result.files.map((file) => file.relativePath)).toEqual([
-        "module.pyc",
         "worker.py",
         "notes.txt",
       ]);
-      expect(stat).toHaveBeenCalledTimes(3);
+      expect(stat).toHaveBeenCalledTimes(2);
       expect(result.files.every((file) => file.type === "other")).toBe(true);
     });
   });
